@@ -1,0 +1,27 @@
+version: '3'
+
+services:
+  sidcorp-fw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+    environment:
+      - MAX_REQ_PER_WINDOW=${MAX_REQ_PER_WINDOW:-100}
+      - BLOCK_DURATION_SECS=${BLOCK_DURATION_SECS:-300}
+      - PORT=${PORT:-8080}
+      - UPSTREAM_ADDR=${UPSTREAM_ADDR:-127.0.0.1:9992}
+      - BLOCK_URL=${BLOCK_URL:-https://example.com/api/v1/block}
+      - API_KEY=${API_KEY:-your-api-key}
+      - USE_CLOUDFLARE=${USE_CLOUDFLARE:-false}
+    restart: unless-stopped
+    networks:
+      - sidcorp-network
+
+networks:
+  sidcorp-network:
+    driver: bridge

@@ -1,0 +1,34 @@
+[package]
+name = "pingwall"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance reverse proxy with intelligent rate limiting, powered by Cloudflare Pingora"
+authors = ["SidCorp"]
+license = "MIT"
+repository = "https://github.com/sidcorp-team/pingwall"
+keywords = ["pingora", "reverse-proxy", "rate-limiting", "firewall", "rust"]
+categories = ["web-programming", "network-programming"]
+
+[dependencies]
+async-trait="0.1"
+pingora = { version = "0.6", features = [ "lb", "boringssl" ] }
+pingora-core = { version = "0.6", features = ["boringssl"] }
+pingora-proxy = { version = "0.6", features = ["boringssl"] }
+pingora-error = "0.6"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+pingora-http = "0.6"
+pingora-limits = "0.6"
+once_cell = "1.19.0"
+reqwest = { version = "0.11", features = ["json"] }
+clap = { version = "4.3", features = ["derive"] }
+url = "2.4.0"
+log4rs = "1.2"
+thiserror = "1.0"
+chrono = "0.4"
+prometheus = "0.13"
+lazy_static = "1.4"
+hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }

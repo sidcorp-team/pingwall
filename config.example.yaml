@@ -1,0 +1,343 @@
+# ============================================================================
+# Pingwall Configuration Example
+# ============================================================================
+# Pingora-powered firewall with intelligent rate limiting and SSL/TLS support
+#
+# This is a comprehensive example configuration showing all available options
+# Copy this file to config.yaml and customize for your deployment
+
+# ============================================================================
+# Global Settings
+# ============================================================================
+# These settings apply as defaults when not overridden at domain or route level
+
+# Default rate limiting (requests per time window)
+max_req_per_window: 100
+
+# Default block duration when rate limit is exceeded (in seconds)
+block_duration_secs: 300  # 5 minutes
+
+# Global timeout for upstream connections (in seconds)
+# Can be overridden at domain or route level
+timeout_secs: 30
+
+# Enable Cloudflare IP detection
+# Set to true if running behind Cloudflare to properly detect client IPs
+use_cloudflare: false
+
+# Prometheus metrics port (optional, default: 9090)
+# Exposes metrics at http://localhost:<port>/metrics for monitoring
+metrics_port: 9090
+
+# ============================================================================
+# Webhook Notifications
+# ============================================================================
+# Configure webhook notifications for rate limit violations
+
+# Webhook URL to receive notifications when IPs are blocked
+block_url: "https://your-webhook-url.com/api/notifications"
+
+# API key for webhook authentication (sent as Bearer token)
+api_key: "your-api-key-here"
+
+# ============================================================================
+# Domain Configurations
+# ============================================================================
+# Configure multiple domains with their own routes, SSL, and rate limits
+
+domains:
+  # --------------------------------------------------------------------------
+  # Example 1: Simple HTTP Reverse Proxy
+  # --------------------------------------------------------------------------
+  # Basic setup without SSL, multiple path-based routes
+  - domain: "127.0.0.1:8080"
+    routers:
+      # API endpoints with strict rate limiting
+      - path: "/api"
+        upstream: "http://backend-api:8000"
+        max_req_per_window: 200
+        block_duration_secs: 300
+        timeout_secs: 15
+        follow_domain: false
+
+      # Admin area with very strict rate limiting
+      - path: "/admin"
+        upstream: "http://admin-service:8001"
+        max_req_per_window: 20
+        block_duration_secs: 900  # 15 minutes
+        timeout_secs: 30
+        follow_domain: false
+
+      # Public content with relaxed rate limiting
+      - path: "/public"
+        upstream: "http://cdn-service:8002"
+        max_req_per_window: 500
+        block_duration_secs: 60
+        timeout_secs: 10
+        follow_domain: false
+
+      # Default fallback route (must be last)
+      - path: "/"
+        upstream: "http://default-backend:9000"
+        max_req_per_window: 100
+        block_duration_secs: 300
+        follow_domain: false
+
+  # --------------------------------------------------------------------------
+  # Example 2: HTTPS with SSL/TLS (Single Domain Certificate)
+  # --------------------------------------------------------------------------
+  # Production API with SSL certificate and domain-level timeout
+  - domain: "api.example.com:443"
+    timeout_secs: 60  # Domain-level timeout override
+    ssl:
+      cert_path: "/etc/ssl/certs/api.example.com.pem"
+      key_path: "/etc/ssl/private/api.example.com-key.pem"
+      # ca_path: "/etc/ssl/certs/ca.pem"  # Optional: for client cert verification
+    routers:
+      # API v1 endpoints
+      - path: "/v1"
+        upstream: "http://api-v1-service:8000"
+        max_req_per_window: 300
+        block_duration_secs: 300
+        timeout_secs: 30
+        follow_domain: true  # Set Host header to api.example.com
+
+      # API v2 endpoints with higher limits
+      - path: "/v2"
+        upstream: "http://api-v2-service:8000"
+        max_req_per_window: 500
+        block_duration_secs: 300
+        timeout_secs: 15
+        follow_domain: true
+
+      # Health check endpoint (no rate limiting)
+      - path: "/health"
+        upstream: "http://health-service:8000"
+        max_req_per_window: -1  # Negative value disables rate limiting
+        block_duration_secs: 0
+        timeout_secs: 5
+        follow_domain: false
+
+  # --------------------------------------------------------------------------
+  # Example 3: Wildcard SSL Certificate for Multiple Subdomains
+  # --------------------------------------------------------------------------
+  # Admin portal with wildcard certificate
+  - domain: "admin.example.com:443"
+    ssl:
+      cert_path: "/etc/ssl/certs/wildcard.example.com.pem"
+      key_path: "/etc/ssl/private/wildcard.example.com-key.pem"
+    routers:
+      # Admin dashboard
+      - path: "/dashboard"
+        upstream: "http://admin-dashboard:8000"
+        max_req_per_window: 50
+        block_duration_secs: 600
+        timeout_secs: 30
+        follow_domain: true
+
+      # Admin API
+      - path: "/api"
+        upstream: "http://admin-api:8001"
+        max_req_per_window: 100
+        block_duration_secs: 900
+        timeout_secs: 20
+        follow_domain: true
+
+      # Default admin route
+      - path: "/"
+        upstream: "http://admin-portal:8000"
+        max_req_per_window: 30
+        block_duration_secs: 1800  # 30 minutes
+        follow_domain: true
+
+  # --------------------------------------------------------------------------
+  # Example 4: Base Path Rewriting
+  # --------------------------------------------------------------------------
+  # Gateway that routes to services with base paths
+  - domain: "gateway.example.com:8080"
+    routers:
+      # Route /images/* to http://image-service:3000/convert/*
+      - path: "/images"
+        upstream: "http://image-service:3000/convert"
+        max_req_per_window: 50
+        block_duration_secs: 120
+        timeout_secs: 120  # Long timeout for image processing
+        follow_domain: false
+
+      # Route /api/* to http://backend:8000/v1/*
+      - path: "/api"
+        upstream: "http://backend:8000/v1"
+        max_req_per_window: 200
+        block_duration_secs: 300
+        timeout_secs: 30
+        follow_domain: true
+
+      # Route /storage/* to http://storage:9000/files/*
+      - path: "/storage"
+        upstream: "http://storage-service:9000/files"
+        max_req_per_window: 100
+        block_duration_secs: 300
+        timeout_secs: 60
+        follow_domain: false
+
+  # --------------------------------------------------------------------------
+  # Example 5: Development Environment
+  # --------------------------------------------------------------------------
+  # Local development setup with relaxed rate limits
+  - domain: "dev.local:8081"
+    ssl:
+      cert_path: "/usr/local/etc/cert/dev.local.pem"
+      key_path: "/usr/local/etc/cert/dev.local-key.pem"
+    routers:
+      # Development API (very relaxed limits)
+      - path: "/api"
+        upstream: "http://localhost:3000"
+        max_req_per_window: 1000
+        block_duration_secs: 30
+        timeout_secs: 300  # Long timeout for debugging
+        follow_domain: false
+
+      # Default dev route
+      - path: "/"
+        upstream: "http://localhost:3000"
+        max_req_per_window: 1000
+        block_duration_secs: 30
+        follow_domain: false
+
+  # --------------------------------------------------------------------------
+  # Example 6: Cloudflare Integration
+  # --------------------------------------------------------------------------
+  # Production site behind Cloudflare with proper IP detection
+  # Make sure to set use_cloudflare: true at the top of this file
+  - domain: "www.example.com:443"
+    ssl:
+      cert_path: "/etc/ssl/certs/www.example.com.pem"
+      key_path: "/etc/ssl/private/www.example.com-key.pem"
+    routers:
+      # Static assets (high rate limit)
+      - path: "/static"
+        upstream: "http://cdn-origin:8000"
+        max_req_per_window: 2000
+        block_duration_secs: 60
+        timeout_secs: 10
+        follow_domain: false
+
+      # API endpoints
+      - path: "/api"
+        upstream: "http://api-backend:8000"
+        max_req_per_window: 500
+        block_duration_secs: 300
+        timeout_secs: 30
+        follow_domain: true
+
+      # Authentication endpoints (stricter limits)
+      - path: "/auth"
+        upstream: "http://auth-service:8000"
+        max_req_per_window: 10
+        block_duration_secs: 3600  # 1 hour block
+        timeout_secs: 15
+        follow_domain: true
+
+      # Default web route
+      - path: "/"
+        upstream: "http://web-server:8000"
+        max_req_per_window: 1000
+        block_duration_secs: 300
+        follow_domain: false
+
+  # --------------------------------------------------------------------------
+  # Example 7: Multiple Services on Same Port (SNI-based routing)
+  # --------------------------------------------------------------------------
+  # Multiple domains sharing port 443 with different SSL certificates
+  - domain: "blog.example.com:443"
+    ssl:
+      cert_path: "/etc/ssl/certs/blog.example.com.pem"
+      key_path: "/etc/ssl/private/blog.example.com-key.pem"
+    routers:
+      - path: "/"
+        upstream: "http://blog-service:8000"
+        max_req_per_window: 200
+        block_duration_secs: 300
+        follow_domain: true
+
+  - domain: "shop.example.com:443"
+    ssl:
+      cert_path: "/etc/ssl/certs/shop.example.com.pem"
+      key_path: "/etc/ssl/private/shop.example.com-key.pem"
+    routers:
+      # Shopping cart (sensitive)
+      - path: "/cart"
+        upstream: "http://cart-service:8000"
+        max_req_per_window: 100
+        block_duration_secs: 600
+        timeout_secs: 30
+        follow_domain: true
+
+      # Product catalog
+      - path: "/products"
+        upstream: "http://catalog-service:8000"
+        max_req_per_window: 500
+        block_duration_secs: 300
+        timeout_secs: 15
+        follow_domain: true
+
+      # Default shop route
+      - path: "/"
+        upstream: "http://shop-frontend:8000"
+        max_req_per_window: 300
+        block_duration_secs: 300
+        follow_domain: true
+
+# ============================================================================
+# Configuration Notes
+# ============================================================================
+#
+# Timeout Priority (highest to lowest):
+# 1. Route-level: domains[].routers[].timeout_secs
+# 2. Domain-level: domains[].timeout_secs
+# 3. Global: timeout_secs
+#
+# Rate Limiting:
+# - Set max_req_per_window to -1 to disable rate limiting for a route
+# - Each domain+path combination has its own rate limit counter
+# - IP blocking is applied per client IP address
+#
+# Routing Priority:
+# 1. Domain + Path match (most specific)
+# 2. Path-only match (routes without domain)
+# 3. Domain default (path="/")
+# 4. Longest matching path always wins within each category
+#
+# SSL/TLS:
+# - Certificates must be in PEM format
+# - Private keys must be in PEM format
+# - SNI (Server Name Indication) is used for multi-domain support on same port
+# - HTTP/2 is automatically enabled for TLS connections
+#
+# Host Header Control:
+# - follow_domain: true  → Sets Host header to match the domain name
+# - follow_domain: false → Preserves original Host header from client
+#
+# Base Path Handling:
+# - Upstream URLs like "http://service:8000/v1" will prepend "/v1" to paths
+# - Example: Request to "/api/users" → "http://service:8000/v1/api/users"
+#
+# Webhook Notifications:
+# - Sent when an IP exceeds rate limit and is blocked
+# - Includes domain, path, IP, user agent, and request details
+# - Uses Bearer token authentication with api_key
+# - Cooldown period prevents notification spam
+#
+# Cloudflare Integration:
+# - Enable use_cloudflare: true when behind Cloudflare
+# - Properly detects client IP from CF-Connecting-IP header
+# - Falls back to X-Forwarded-For and X-Real-IP headers
+#
+# Prometheus Metrics:
+# - Metrics exposed on metrics_port (default: 9090)
+# - Access at http://localhost:9090/metrics
+# - Includes request rates, response times, rate limit blocks, and more
+# - Compatible with Prometheus and Grafana for visualization
+# - See README.md for complete metrics documentation and dashboard setup
+#
+# ============================================================================

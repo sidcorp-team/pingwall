@@ -1,0 +1,95 @@
+# Rust build artifacts
+/target
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE
+/.idea
+/.idea_modules
+.vscode/
+*.swp
+*.swo
+*~
+*.iml
+.project
+.classpath
+.settings/
+.claude/
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Logs
+/logs
+*.log
+*.log.*
+log/
+
+# Configuration (keep example, ignore actual config)
+config.yaml
+!config.example.yaml
+
+# SSL certificates and keys
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+/certs
+/ssl
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Backup files
+*.bak
+*.backup
+*.tmp
+*.temp
+*~
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Monitoring & Metrics data
+prometheus_data/
+grafana_data/
+/prometheus/data/
+/grafana/data/
+
+# Test & Debug
+/test-results/
+/coverage/
+*.profraw
+*.profdata
+
+# Binary outputs
+/bin/
+/dist/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Package managers
+node_modules/
+package-lock.json
+yarn.lock
