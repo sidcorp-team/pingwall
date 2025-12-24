@@ -122,6 +122,14 @@ impl ProxyHttp for ReverseProxy {
         let timeout_secs = self.get_timeout_for_request(session);
         let timeout_duration = std::time::Duration::from_secs(timeout_secs);
 
+        // Check if this is a WebSocket upgrade request
+        let is_websocket = session.req_header()
+            .headers
+            .get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
         // ⚡ Performance optimizations
 
         // 1. Connection reuse: Set idle timeout to keep connections alive
@@ -130,14 +138,31 @@ impl ProxyHttp for ReverseProxy {
 
         // 2. Timeout configuration
         peer.options.connection_timeout = Some(timeout_duration);
-        peer.options.read_timeout = Some(timeout_duration);
-        peer.options.write_timeout = Some(timeout_duration);
+
+        if is_websocket {
+            // WebSocket connections can be idle for long periods (only heartbeat/ping/pong)
+            // Disable read/write timeouts to prevent killing idle WebSocket connections
+            peer.options.read_timeout = None;
+            peer.options.write_timeout = None;
+            // Allow WebSocket to stay connected for up to 24 hours
+            peer.options.idle_timeout = Some(std::time::Duration::from_secs(86400));
+        } else {
+            // Normal HTTP requests use configured timeouts
+            peer.options.read_timeout = Some(timeout_duration);
+            peer.options.write_timeout = Some(timeout_duration);
+        }
+
         peer.options.total_connection_timeout = Some(timeout_duration);
 
-        // 3. Enable HTTP/2 ONLY for HTTPS upstreams (not HTTP)
-        // HTTP/2 requires TLS, enabling it for HTTP causes negotiation failures
+        // 3. Protocol selection (HTTP/2 vs HTTP/1.1)
         use pingora_core::protocols::ALPN;
-        if peer.is_tls() {
+
+        if is_websocket {
+            // WebSocket requires HTTP/1.1, always use H1
+            peer.options.alpn = ALPN::H1;
+        } else if peer.is_tls() {
+            // Enable HTTP/2 for HTTPS upstreams (not HTTP)
+            // HTTP/2 requires TLS, enabling it for HTTP causes negotiation failures
             peer.options.alpn = ALPN::H2H1;
             // Increase max HTTP/2 streams for better performance
             peer.options.max_h2_streams = 128;
