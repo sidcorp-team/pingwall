@@ -10,9 +10,15 @@ use pingora_core::{
     },
 };
 use std::collections::HashMap;
-use std::sync::Arc;
-use log::{info, error};
+use std::sync::{Arc, Mutex};
+use log::{info, error, debug};
 use crate::metrics;
+use once_cell::sync::Lazy;
+
+// Cache for loaded certificates to avoid disk I/O on every handshake
+// Using owned types that can be cloned
+static CERT_CACHE: Lazy<Mutex<HashMap<String, (Vec<u8>, Vec<u8>)>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
 
 /// SNI handler for managing multiple SSL certificates per port
 pub struct SniHandler {
@@ -72,16 +78,51 @@ impl TlsAccept for SniHandler {
             }
         };
 
-        // Load certificate from file
-        let cert_bytes = match std::fs::read(&cert_path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                error!("Failed to read certificate file {}: {}", cert_path, e);
-                metrics::record_ssl_handshake(&server_name, false);
-                return;
+        // Create a cache key based on cert and key paths
+        let cache_key = format!("{}:{}", cert_path, key_path);
+
+        // Try to get certificate bytes from cache first
+        let (cert_bytes, key_bytes) = {
+            let cache = CERT_CACHE.lock().unwrap();
+            if let Some((cached_cert, cached_key)) = cache.get(&cache_key) {
+                debug!("Using cached certificate bytes for domain: {}", server_name);
+                (cached_cert.clone(), cached_key.clone())
+            } else {
+                // Cache miss, need to load from disk
+                drop(cache); // Release lock before I/O
+
+                debug!("Loading certificate from disk for domain: {}", server_name);
+
+                // Load certificate from file
+                let cert_bytes = match std::fs::read(&cert_path) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        error!("Failed to read certificate file {}: {}", cert_path, e);
+                        metrics::record_ssl_handshake(&server_name, false);
+                        return;
+                    }
+                };
+
+                // Load private key from file
+                let key_bytes = match std::fs::read(&key_path) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        error!("Failed to read private key file {}: {}", key_path, e);
+                        metrics::record_ssl_handshake(&server_name, false);
+                        return;
+                    }
+                };
+
+                // Store raw bytes in cache for future use
+                let mut cache = CERT_CACHE.lock().unwrap();
+                cache.insert(cache_key.clone(), (cert_bytes.clone(), key_bytes.clone()));
+                info!("Cached certificate bytes for domain: {}", server_name);
+
+                (cert_bytes, key_bytes)
             }
         };
 
+        // Parse certificate from cached or loaded bytes
         let cert = match X509::from_pem(&cert_bytes) {
             Ok(cert) => cert,
             Err(e) => {
@@ -91,16 +132,7 @@ impl TlsAccept for SniHandler {
             }
         };
 
-        // Load private key from file
-        let key_bytes = match std::fs::read(&key_path) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                error!("Failed to read private key file {}: {}", key_path, e);
-                metrics::record_ssl_handshake(&server_name, false);
-                return;
-            }
-        };
-
+        // Parse private key from cached or loaded bytes
         let key = match PKey::private_key_from_pem(&key_bytes) {
             Ok(key) => key,
             Err(e) => {
@@ -123,7 +155,7 @@ impl TlsAccept for SniHandler {
             return;
         }
 
-        info!("SNI certificate successfully configured for domain: {}", server_name);
+        debug!("SNI certificate successfully configured for domain: {}", server_name);
         metrics::record_ssl_handshake(&server_name, true);
     }
 }

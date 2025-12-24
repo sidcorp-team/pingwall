@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
+use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -32,6 +33,8 @@ pub struct Router {
     pub follow_domain: bool,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub advanced_limits: Option<AdvancedRateLimitConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -62,6 +65,8 @@ pub struct UpstreamRoute {
     pub ssl: Option<SslConfig>,
     #[serde(default)]
     pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub advanced_limits: Option<AdvancedRateLimitConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -98,6 +103,12 @@ pub struct Config {
 
     #[serde(default)]
     pub metrics_port: Option<u16>,
+
+    /// Rate limit window duration in seconds
+    /// Default: 1 second (most granular)
+    /// Examples: 1 (per second), 60 (per minute), 3600 (per hour)
+    #[serde(default = "default_rate_limit_window_secs")]
+    pub rate_limit_window_secs: u64,
 }
 
 fn default_max_req_per_window() -> isize { 60 }
@@ -109,6 +120,7 @@ fn default_block_url() -> String { "https://example.com/api/v1/block".to_string(
 fn default_api_key() -> String { "your-api-key".to_string() }
 fn default_use_cloudflare() -> bool { false }
 fn default_timeout_secs() -> u64 { 30 }
+fn default_rate_limit_window_secs() -> u64 { 1 }  // Default: 1 second (most granular)
 
 fn default_routes() -> Vec<UpstreamRoute> {
     vec![
@@ -121,6 +133,7 @@ fn default_routes() -> Vec<UpstreamRoute> {
             follow_domain: false,
             ssl: None,
             timeout_secs: None,
+            advanced_limits: None,
         }
     ]
 }
@@ -139,6 +152,7 @@ impl Default for Config {
             use_cloudflare: default_use_cloudflare(),
             timeout_secs: default_timeout_secs(),
             metrics_port: None,
+            rate_limit_window_secs: default_rate_limit_window_secs(),
         }
     }
 }
@@ -160,5 +174,177 @@ impl Config {
     /// Get effective timeout for legacy routes with priority: path > global
     pub fn get_effective_timeout_legacy(&self, route: &UpstreamRoute) -> u64 {
         route.timeout_secs.unwrap_or(self.timeout_secs)
+    }
+}
+
+// ==================== Advanced Rate Limiting Configuration ====================
+
+/// Rate limit configuration - supports both simple and extended formats
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum LimitConfig {
+    /// Simple format: just a number (e.g., "15169": 200)
+    /// Uses global window and route block_duration
+    Simple(isize),
+
+    /// Extended format with custom window and block behavior
+    /// Example: { max_req: 60, window_secs: 60, block_duration_secs: 0 }
+    Extended(ExtendedLimitConfig),
+}
+
+impl LimitConfig {
+    /// Get max requests from this config
+    pub fn max_req(&self) -> isize {
+        match self {
+            LimitConfig::Simple(max) => *max,
+            LimitConfig::Extended(config) => config.max_req,
+        }
+    }
+
+    /// Get window in seconds (None = use global)
+    pub fn window_secs(&self) -> Option<u64> {
+        match self {
+            LimitConfig::Simple(_) => None,
+            LimitConfig::Extended(config) => config.window_secs,
+        }
+    }
+
+    /// Get block duration (None = use route default, Some(0) = soft limit)
+    pub fn block_duration_secs(&self) -> Option<u64> {
+        match self {
+            LimitConfig::Simple(_) => None,
+            LimitConfig::Extended(config) => config.block_duration_secs,
+        }
+    }
+}
+
+/// Extended limit configuration with window and block behavior
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ExtendedLimitConfig {
+    /// Maximum requests allowed
+    pub max_req: isize,
+
+    /// Rate limit window in seconds
+    /// - None: Use global rate_limit_window_secs
+    /// - Some(1): Per second
+    /// - Some(60): Per minute
+    /// - Some(3600): Per hour
+    /// - Some(86400): Per day
+    #[serde(default)]
+    pub window_secs: Option<u64>,
+
+    /// Block duration when limit exceeded
+    /// - None: Use route's block_duration_secs
+    /// - Some(0): Soft limit (reject requests only, don't block IP)
+    /// - Some(N): Hard block IP for N seconds
+    #[serde(default)]
+    pub block_duration_secs: Option<u64>,
+}
+
+/// Advanced rate limiting configuration with multi-dimensional limits
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct AdvancedRateLimitConfig {
+    /// User-Agent based limits
+    /// Simple: "bot": 10
+    /// Extended: "bot": { max_req: 10, window_secs: 1, block_duration_secs: 300 }
+    #[serde(default)]
+    pub user_agent_limits: Option<HashMap<String, LimitConfig>>,
+
+    /// ASN-based limits
+    /// Simple: "15169": 200
+    /// Extended: "32934": { max_req: 60, window_secs: 60, block_duration_secs: 0 }
+    #[serde(default)]
+    pub asn_limits: Option<HashMap<String, LimitConfig>>,
+
+    /// Country-based limits
+    /// Simple: "CN": 50
+    /// Extended: "CN": { max_req: 50, window_secs: 3600, block_duration_secs: 3600 }
+    #[serde(default)]
+    pub country_limits: Option<HashMap<String, LimitConfig>>,
+
+    /// List of countries to completely block (2-letter ISO codes)
+    #[serde(default)]
+    pub block_countries: Option<Vec<String>>,
+
+    /// Cloudflare threat score threshold (0-100). Block if above this value.
+    #[serde(default)]
+    pub threat_score_threshold: Option<u8>,
+
+    /// Custom rules with complex conditions
+    #[serde(default)]
+    pub rules: Option<Vec<RateLimitRule>>,
+}
+
+/// A rate limit rule with conditions
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct RateLimitRule {
+    /// Rule name (for logging/debugging)
+    pub name: String,
+
+    /// Conditions that must ALL be true (AND logic)
+    pub conditions: Vec<RateLimitCondition>,
+
+    /// Max requests if this rule matches
+    pub max_req: isize,
+
+    /// Block duration in seconds if this rule matches
+    pub block_duration: u64,
+}
+
+/// A condition for rate limit rules
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum RateLimitCondition {
+    /// User-Agent contains string (case-insensitive)
+    UserAgentContains { value: String },
+
+    /// Country is in the list
+    CountryIn { values: Vec<String> },
+
+    /// Country is NOT in the list
+    CountryNotIn { values: Vec<String> },
+
+    /// ASN is in the list
+    AsnIn { values: Vec<String> },
+
+    /// Threat score is above threshold
+    ThreatScoreAbove { value: u8 },
+}
+
+impl AdvancedRateLimitConfig {
+    /// Get User-Agent limit config for a specific category
+    pub fn get_user_agent_limit(&self, category: &str) -> Option<&LimitConfig> {
+        self.user_agent_limits
+            .as_ref()
+            .and_then(|limits| limits.get(category))
+    }
+
+    /// Get ASN limit config
+    pub fn get_asn_limit(&self, asn: &str) -> Option<&LimitConfig> {
+        self.asn_limits
+            .as_ref()
+            .and_then(|limits| limits.get(asn))
+    }
+
+    /// Get country limit config
+    pub fn get_country_limit(&self, country: &str) -> Option<&LimitConfig> {
+        self.country_limits
+            .as_ref()
+            .and_then(|limits| limits.get(country))
+    }
+
+    /// Check if country is in block list
+    pub fn is_country_blocked(&self, country: &str) -> bool {
+        self.block_countries
+            .as_ref()
+            .map_or(false, |blocked| {
+                blocked.iter().any(|c| c.eq_ignore_ascii_case(country))
+            })
+    }
+
+    /// Check if threat score should be blocked
+    pub fn should_block_threat(&self, threat_score: u8) -> bool {
+        self.threat_score_threshold
+            .map_or(false, |threshold| threat_score > threshold)
     }
 }

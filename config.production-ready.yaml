@@ -1,0 +1,528 @@
+# ============================================================================
+# SIDCORP-FW Production Configuration
+# ============================================================================
+#
+# Features:
+# ✅ Per-limit window configuration (sliding window)
+# ✅ Soft limit (reject only) vs Hard block (block IP)
+# ✅ Multi-dimensional rate limiting (ASN, User-Agent, Country)
+# ✅ Cloudflare integration
+# ✅ SSL support
+# ✅ Webhook notifications
+#
+# ============================================================================
+
+# ============================================================================
+# GLOBAL SETTINGS
+# ============================================================================
+
+# Rate limit window: 60 seconds (per-minute limiting)
+# This is the DEFAULT window, can be overridden per-limit
+rate_limit_window_secs: 60
+
+# Default max requests per window
+max_req_per_window: 100
+
+# Default block duration (5 minutes)
+block_duration_secs: 300
+
+# Global timeout
+timeout_secs: 60
+
+# Enable Cloudflare (REQUIRED for ASN/Country/Threat limiting)
+use_cloudflare: true
+
+# Metrics port
+metrics_port: 9090
+
+# ============================================================================
+# DOMAINS & PATHS
+# ============================================================================
+
+domains:
+  # ==========================================================================
+  # MAIN DOMAIN: 127.0.0.1:8081
+  # ==========================================================================
+  - domain: "127.0.0.1:8081"
+    routers:
+      # ========================================================================
+      # /images - File Upload Service
+      # Strategy: Generous for trusted, strict for untrusted
+      # ========================================================================
+      - path: "/images"
+        upstream: "http://216.158.67.34:3091/convert"
+        max_req_per_window: 100  # Default IP: 100 uploads/hour
+        block_duration_secs: 3600  # Block 1 hour if exceeded
+        timeout_secs: 120
+        follow_domain: false
+
+        advanced_limits:
+          # ASN-based limits
+          asn_limits:
+            # Trusted cloud providers: Soft limit (no IP block)
+            "15169":  # Google Cloud
+              max_req: 200
+              window_secs: 3600      # Per hour
+              block_duration_secs: 0  # Soft limit (reject only)
+
+            "16509":  # AWS
+              max_req: 200
+              window_secs: 3600
+              block_duration_secs: 0  # Soft limit
+
+            # Facebook/Meta: Moderate soft limit
+            "32934":
+              max_req: 100
+              window_secs: 3600
+              block_duration_secs: 0  # Soft limit
+
+            # Suspicious ASNs: Hard block
+            "4134":  # China Telecom
+              max_req: 10
+              window_secs: 86400     # Per day
+              block_duration_secs: 86400  # Block 1 day
+
+          # User-Agent based limits
+          user_agent_limits:
+            # Block bots completely
+            "bot":
+              max_req: 0
+              window_secs: 1
+              block_duration_secs: 86400  # Block 1 day
+
+            "crawler":
+              max_req: 0
+              window_secs: 1
+              block_duration_secs: 86400
+
+            # Browsers: Generous soft limit
+            "chrome": 200
+            "firefox": 200
+            "safari": 200
+            "edge": 200
+
+            # Mobile: Slightly lower
+            "mobile": 150
+
+            # curl/Unknown: Restricted but allowed
+            "curl":
+              max_req: 50
+              window_secs: 3600
+              block_duration_secs: 3600  # Hard block 1 hour
+
+            "unknown":
+              max_req: 20
+              window_secs: 3600
+              block_duration_secs: 7200  # Block 2 hours
+
+          # Country-based limits
+          country_limits:
+            "US": 200    # Simple format
+            "VN": 200
+            "SG": 150
+            "JP": 150
+
+            # Restricted countries with hard block
+            "CN":
+              max_req: 20
+              window_secs: 86400
+              block_duration_secs: 86400
+
+            "RU":
+              max_req: 20
+              window_secs: 86400
+              block_duration_secs: 86400
+
+          # Block high-risk countries
+          block_countries: ["KP", "IR", "SY"]
+
+          # Auto-block high threat scores
+          threat_score_threshold: 75
+
+      # ========================================================================
+      # /api - Main API Service
+      # Strategy: Real-time per-second limits for granular control
+      # ========================================================================
+      - path: "/api"
+        upstream: "http://127.0.0.1:8000"
+        max_req_per_window: 10   # Default IP: 10 req/sec = 600 req/min
+        block_duration_secs: 60  # Block 1 minute if exceeded
+        timeout_secs: 10
+        follow_domain: false
+
+        advanced_limits:
+          # ASN limits with PER-SECOND windows (real-time)
+          asn_limits:
+            # Google Cloud: High limit, soft
+            "15169":
+              max_req: 50         # 50 requests
+              window_secs: 1      # per SECOND
+              block_duration_secs: 0  # Soft limit
+
+            # AWS: Medium limit, soft
+            "16509":
+              max_req: 30
+              window_secs: 1
+              block_duration_secs: 0
+
+            # Facebook: Moderate with hard block
+            "32934":
+              max_req: 20
+              window_secs: 1
+              block_duration_secs: 300  # Block 5 minutes
+
+            # China Telecom: Very strict
+            "4134":
+              max_req: 1
+              window_secs: 1
+              block_duration_secs: 3600  # Block 1 hour
+
+          # User-Agent limits
+          user_agent_limits:
+            "chrome": 20   # 20 req/sec (uses default window=1)
+            "firefox": 20
+            "safari": 20
+            "mobile": 15
+
+            "bot":
+              max_req: 5
+              window_secs: 1
+              block_duration_secs: 300
+
+            "curl":
+              max_req: 10
+              window_secs: 1
+              block_duration_secs: 60
+
+          # Threat score
+          threat_score_threshold: 80
+
+      # ========================================================================
+      # /admin - Admin Panel
+      # Strategy: Per-day limits, very strict
+      # ========================================================================
+      - path: "/admin"
+        upstream: "127.0.0.1:9992/login"
+        max_req_per_window: 500  # Default IP: 500 req/day
+        block_duration_secs: 86400  # Block 1 day
+        timeout_secs: 15
+        follow_domain: false
+
+        advanced_limits:
+          # Only allow specific countries
+          country_limits:
+            "US":
+              max_req: 1000
+              window_secs: 86400  # Per day
+              block_duration_secs: 86400
+
+            "VN":
+              max_req: 500
+              window_secs: 86400
+              block_duration_secs: 86400
+
+            "SG":
+              max_req: 300
+              window_secs: 86400
+              block_duration_secs: 86400
+
+          # Block all other countries
+          block_countries: ["CN", "RU", "KP", "IR", "SY"]
+
+          # Only browsers allowed
+          user_agent_limits:
+            "chrome": 1000
+            "firefox": 1000
+            "safari": 1000
+            "edge": 1000
+
+            # Block everything else
+            "bot":
+              max_req: 0
+              window_secs: 1
+              block_duration_secs: 86400
+
+            "curl":
+              max_req: 0
+              window_secs: 1
+              block_duration_secs: 86400
+
+            "unknown":
+              max_req: 0
+              window_secs: 1
+              block_duration_secs: 86400
+
+          # Very strict threat score
+          threat_score_threshold: 30
+
+      # ========================================================================
+      # /products - Product API
+      # Strategy: Facebook soft limit 60 req/min, others normal
+      # ========================================================================
+      - path: "/products"
+        upstream: "http://127.0.0.1:8000"
+        max_req_per_window: 100  # Default IP: 100 req/min
+        block_duration_secs: 300
+        timeout_secs: 30
+        follow_domain: false
+
+        advanced_limits:
+          # ASN limits
+          asn_limits:
+            # Facebook/Meta: 60 req/min with SOFT LIMIT
+            "32934":
+              max_req: 60              # 60 requests
+              window_secs: 60          # per minute (sliding window)
+              block_duration_secs: 0   # 0 = SOFT LIMIT (reject only, don't block IP)
+
+            # Google Cloud: Higher limit, soft
+            "15169":
+              max_req: 200
+              window_secs: 60
+              block_duration_secs: 0
+
+            # AWS: Higher limit, soft
+            "16509":
+              max_req: 150
+              window_secs: 60
+              block_duration_secs: 0
+
+            # China: Restricted with hard block
+            "4134":
+              max_req: 20
+              window_secs: 60
+              block_duration_secs: 3600  # Block 1 hour
+
+          # User-Agent limits
+          user_agent_limits:
+            "chrome": 150
+            "firefox": 150
+            "safari": 150
+            "mobile": 100
+
+            "bot":
+              max_req: 20
+              window_secs: 60
+              block_duration_secs: 300
+
+            "crawler": 30
+
+          # Country limits
+          country_limits:
+            "US": 200
+            "VN": 200
+            "CN": 50  # Restricted
+
+          # Threat threshold
+          threat_score_threshold: 70
+
+      # ========================================================================
+      # / - Default/Fallback
+      # Strategy: Standard per-minute limits
+      # ========================================================================
+      - path: "/"
+        upstream: "127.0.0.1:9992"
+        max_req_per_window: 100  # 100 req/min
+        block_duration_secs: 300
+        follow_domain: false
+
+        advanced_limits:
+          # Simple ASN limits
+          asn_limits:
+            "15169": 200  # Google Cloud
+            "16509": 200  # AWS
+            "32934": 100  # Facebook
+
+          # Simple User-Agent limits
+          user_agent_limits:
+            "chrome": 150
+            "firefox": 150
+            "safari": 150
+            "mobile": 100
+            "bot": 20
+            "crawler": 30
+
+          # Moderate threat threshold
+          threat_score_threshold: 70
+
+  # ==========================================================================
+  # SSL DOMAINS
+  # ==========================================================================
+  - domain: "api.dev.local:8082"
+    ssl:
+      cert_path: "/usr/local/etc/cert/_wildcard.dev.local.pem"
+      key_path: "/usr/local/etc/cert/_wildcard.dev.local-key.pem"
+    routers:
+      - path: "/"
+        upstream: "https://vnexpress.net"
+        follow_domain: true
+        max_req_per_window: 200
+        block_duration_secs: 30
+
+  - domain: "api.test.local:8082"
+    ssl:
+      cert_path: "/usr/local/etc/cert/_wildcard.test.local.pem"
+      key_path: "/usr/local/etc/cert/_wildcard.test.local-key.pem"
+    routers:
+      - path: "/api/v2"
+        upstream: "http://127.0.0.1:8000"
+        follow_domain: false
+        max_req_per_window: 100  # Increased from 5 for production
+        block_duration_secs: 60
+
+      - path: "/"
+        upstream: "http://127.0.0.1:9992"
+        follow_domain: true
+        max_req_per_window: 100  # Increased from 5
+        block_duration_secs: 30
+
+  - domain: "admin.example.com:8081"
+    routers:
+      - path: "/"
+        upstream: "http://127.0.0.1:8002"
+        follow_domain: false
+        max_req_per_window: 50  # Reduced from 20 for better UX
+        block_duration_secs: 600  # Reduced from 9001
+
+      - path: "/dashboard"
+        upstream: "http://127.0.0.1:8003/admin"
+        follow_domain: false
+        max_req_per_window: 100  # Increased from 30
+        block_duration_secs: 600
+
+# ============================================================================
+# NOTIFICATION SETTINGS
+# ============================================================================
+block_url: "https://it-n8n.canawan.com/webhook/sidcorp-fw-block-ip-spam"
+api_key: "your-api-key"
+
+# ============================================================================
+# SUMMARY BY PATH
+# ============================================================================
+#
+# /images (File Upload):
+#   - Window: Per hour (3600s)
+#   - Default: 100 uploads/hour
+#   - Google/AWS: 200 uploads/hour (soft limit)
+#   - Facebook: 100 uploads/hour (soft limit)
+#   - China: 10/day (hard block)
+#   - Bots: Blocked
+#   - Browsers: 200/hour
+#
+# /api (Real-time API):
+#   - Window: Per second (1s)
+#   - Default: 10 req/sec
+#   - Google: 50 req/sec (soft limit)
+#   - AWS: 30 req/sec (soft limit)
+#   - Facebook: 20 req/sec (hard block 5min)
+#   - China: 1 req/sec (hard block 1hr)
+#   - Browsers: 20 req/sec
+#
+# /admin (Admin Panel):
+#   - Window: Per day (86400s)
+#   - Default: 500 req/day
+#   - US: 1000 req/day
+#   - VN: 500 req/day
+#   - Only browsers allowed
+#   - Other countries: Blocked
+#   - Bots/curl: Blocked
+#
+# /products (Product API): ⭐ NEW
+#   - Window: Per minute (60s) - SLIDING WINDOW
+#   - Default: 100 req/min
+#   - Facebook (ASN 32934): 60 req/min (SOFT LIMIT - no IP block)
+#   - Google: 200 req/min (soft limit)
+#   - AWS: 150 req/min (soft limit)
+#   - China: 20 req/min (hard block 1hr)
+#   - Browsers: 150 req/min
+#
+# / (Default):
+#   - Window: Per minute (60s)
+#   - Default: 100 req/min
+#   - Google/AWS: 200 req/min
+#   - Facebook: 100 req/min
+#   - Browsers: 150 req/min
+#
+# ============================================================================
+
+# ============================================================================
+# TESTING GUIDE
+# ============================================================================
+#
+# Test 1: /products - Facebook soft limit (60 req/min)
+#   # Send 70 requests in 1 minute
+#   for i in {1..70}; do
+#     curl -i -H "CF-Connecting-ASN: AS32934" \
+#              -H "CF-IPCountry: US" \
+#              http://localhost:8081/products
+#     echo "Request $i"
+#     sleep 0.5
+#   done
+#
+#   # Expected:
+#   # - Request 1-60: 200 OK
+#   # - Request 61-70: 429 Too Many Requests
+#   #   Headers: Retry-After: 60, X-RateLimit-Window: 60
+#   # - IP NOT blocked (soft limit)
+#   # - After 60 seconds: Can send another 60 requests
+#
+# Test 2: /products - Verify sliding window
+#   # T=0s: Send 60 requests instantly
+#   for i in {1..60}; do
+#     curl -H "CF-Connecting-ASN: AS32934" \
+#          http://localhost:8081/products &
+#   done
+#   wait
+#   echo "Sent 60 requests"
+#
+#   # T=0s: Try 61st (should be blocked)
+#   curl -i -H "CF-Connecting-ASN: AS32934" \
+#        http://localhost:8081/products
+#   # Expected: 429 with Retry-After: 60
+#
+#   # T=30s: Try again (should still be blocked)
+#   sleep 30
+#   curl -i -H "CF-Connecting-ASN: AS32934" \
+#        http://localhost:8081/products
+#   # Expected: 429 (60 requests from T=0 still in window)
+#
+#   # T=60s: Try again (should be OK)
+#   sleep 30
+#   curl -i -H "CF-Connecting-ASN: AS32934" \
+#        http://localhost:8081/products
+#   # Expected: 200 OK (window slid, old requests expired)
+#
+# Test 3: /images soft limit (Facebook)
+#   for i in {1..150}; do
+#     curl -H "CF-Connecting-ASN: AS32934" \
+#          http://localhost:8081/images
+#   done
+#   # After 100: 429, but IP not blocked
+#
+# Test 4: /api per-second limit (China)
+#   for i in {1..5}; do
+#     curl -H "CF-Connecting-ASN: AS4134" \
+#          http://localhost:8081/api &
+#   done
+#   wait
+#   # Only 1 succeeds, rest get 429 + blocked 1 hour
+#
+# Test 5: /admin country block
+#   curl -H "CF-IPCountry: CN" \
+#        http://localhost:8081/admin
+#   # Instant block (country blacklisted)
+#
+# Test 6: Verify headers
+#   curl -i -H "CF-Connecting-ASN: AS32934" \
+#        http://localhost:8081/products
+#
+#   # Expected headers after exceeding limit:
+#   # HTTP/1.1 429 Too Many Requests
+#   # X-Rate-Limit-Limit: 60
+#   # X-Rate-Limit-Remaining: 0
+#   # X-Rate-Limit-Reset: 300
+#   # X-Rate-Limit-Path: /products
+#   # Retry-After: 60           ← Wait 60 seconds
+#   # X-RateLimit-Window: 60    ← Window duration
+#
+# ============================================================================

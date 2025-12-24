@@ -39,9 +39,10 @@ $RECYCLE.BIN/
 *.log.*
 log/
 
-# Configuration (keep example, ignore actual config)
+# Configuration (keep example and production-ready, ignore actual config)
 config.yaml
 !config.example.yaml
+!config.production-ready.yaml
 
 # SSL certificates and keys
 *.pem
@@ -64,6 +65,7 @@ config.yaml
 *.tmp
 *.temp
 *~
+/tmp/
 
 # Docker
 docker-compose.override.yml

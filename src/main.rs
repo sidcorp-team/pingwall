@@ -26,7 +26,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(config_path);
 
     set_use_cloudflare(config.use_cloudflare);
-    ratelimit::limiter::init_globals(config.max_req_per_window, config.block_duration_secs);
+    ratelimit::limiter::init_globals_with_window(
+        config.max_req_per_window,
+        config.block_duration_secs,
+        config.rate_limit_window_secs,
+    );
 
     let mut all_routes = Vec::new();
 
@@ -43,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 follow_domain: router.follow_domain,
                 ssl: domain_config.ssl.clone(),
                 timeout_secs: router.timeout_secs,
+                advanced_limits: router.advanced_limits.clone(),
             };
 
             all_routes.push(route);
@@ -167,5 +172,6 @@ fn load_config(config_path: &str) -> Config {
         use_cloudflare: args.use_cloudflare,
         timeout_secs: 30,
         metrics_port: None,
+        rate_limit_window_secs: 1,  // Default: 1 second (per-second rate limiting)
     }
 }

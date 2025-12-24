@@ -164,9 +164,15 @@ impl ProxyHttp for ReverseProxy {
                 return Ok(false);
             }
 
-            self.rate_limiter.check_rate_limit(session, &ip, &route.path).await
+            // Pass advanced_limits if configured
+            self.rate_limiter.check_rate_limit(
+                session,
+                &ip,
+                &route.path,
+                route.advanced_limits.as_ref(),
+            ).await
         } else {
-            self.rate_limiter.check_rate_limit(session, &ip, "/").await
+            self.rate_limiter.check_rate_limit(session, &ip, "/", None).await
         }
     }
 

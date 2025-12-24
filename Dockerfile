@@ -4,32 +4,41 @@
 # Multi-stage Dockerfile for building a minimal production image
 
 # Build stage
-FROM rust:1.81 as builder
+FROM rust:1.90 AS builder
 
 WORKDIR /usr/src/pingwall
 
-# Copy the Cargo.toml and Cargo.lock files first to leverage Docker caching
-COPY Cargo.toml Cargo.lock ./
+# Install build dependencies required for Pingora and its dependencies
+RUN apt-get update && apt-get install -y \
+    cmake \
+    pkg-config \
+    libssl-dev \
+    clang \
+    libclang-dev \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-# Create a dummy main.rs to build dependencies
-RUN mkdir -p src && echo "fn main() {}" > src/main.rs
+# Set build optimization flags to reduce memory usage
+ENV CARGO_BUILD_JOBS=2
+ENV CARGO_NET_RETRY=10
+ENV RUSTFLAGS="-C codegen-units=1"
 
-# Build dependencies
-RUN cargo build --release
-
-# Now copy the real source code
+# Copy all source code
 COPY . .
 
-# Build the application
-RUN cargo build --release
+# Build the application with limited parallelism
+RUN cargo build --release -j 2
 
 # Runtime stage
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install SSL certificates for HTTPS support
-RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+# Install runtime dependencies for SSL/TLS support
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the built executable
 COPY --from=builder /usr/src/pingwall/target/release/pingwall /app/
