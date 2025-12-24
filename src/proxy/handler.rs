@@ -245,20 +245,32 @@ impl ProxyHttp for ReverseProxy {
 
     async fn upstream_request_filter(
         &self,
-        _session: &mut Session,
+        session: &mut Session,
         upstream_request: &mut pingora_http::RequestHeader,
         _ctx: &mut Self::CTX,
     ) -> Result<()> {
-        // ⚡ Performance: Enable HTTP/2 server push hints
+        // Check if this is a WebSocket upgrade request
+        let is_websocket = session.req_header()
+            .headers
+            .get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
         // Remove hop-by-hop headers that shouldn't be forwarded
-        upstream_request.remove_header("connection");
+        // EXCEPT for WebSocket upgrade requests which need these headers
+        if !is_websocket {
+            // Normal HTTP: remove hop-by-hop headers
+            upstream_request.remove_header("connection");
+            upstream_request.remove_header("upgrade");
+        }
+        // Always remove these hop-by-hop headers
         upstream_request.remove_header("keep-alive");
         upstream_request.remove_header("proxy-authenticate");
         upstream_request.remove_header("proxy-authorization");
         upstream_request.remove_header("te");
         upstream_request.remove_header("trailer");
         upstream_request.remove_header("transfer-encoding");
-        upstream_request.remove_header("upgrade");
 
         Ok(())
     }
@@ -269,6 +281,13 @@ impl ProxyHttp for ReverseProxy {
         resp: &mut ResponseHeader,
         ctx: &mut Self::CTX
     ) -> Result<()> {
+        // Don't modify WebSocket upgrade responses
+        // WebSocket upgrade returns HTTP 101 Switching Protocols
+        if resp.status.as_u16() == 101 {
+            log::debug!("WebSocket upgrade response (101) - skipping response modification");
+            return Ok(());
+        }
+
         resp.insert_header("X-Proxied-By", "Pingwall")?;
 
         let duration = ctx.elapsed().as_secs_f64();
