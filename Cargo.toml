@@ -1,3 +1,4 @@
+[package]
 name = "pingwall"
 version = "0.1.0"
 edition = "2021"
@@ -21,7 +22,7 @@ serde_json = "1.0"
 pingora-http = "0.6"
 pingora-limits = "0.6"
 once_cell = "1.19.0"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+reqwest = { version = "0.11", features = ["json"] }
 clap = { version = "4.3", features = ["derive"] }
 url = "2.4.0"
 log4rs = "1.2"
@@ -31,3 +32,5 @@ prometheus = "0.13"
 lazy_static = "1.4"
 hyper = { version = "0.14", features = ["server", "tcp", "http1"] }
 tokio = { version = "1", features = ["rt-multi-thread"] }
+woothee = "0.13"  # User-Agent parser (lightweight, pure Rust)
+ipnetwork = "0.20"  # CIDR range matching
