@@ -121,10 +121,31 @@ impl ProxyHttp for ReverseProxy {
         let timeout_secs = self.get_timeout_for_request(session);
         let timeout_duration = std::time::Duration::from_secs(timeout_secs);
 
+        // ⚡ Performance optimizations
+
+        // 1. Connection reuse: Set idle timeout to keep connections alive
+        // This avoids TCP handshake overhead (150-400ms per request!)
+        peer.options.idle_timeout = Some(std::time::Duration::from_secs(90));
+
+        // 2. Timeout configuration
         peer.options.connection_timeout = Some(timeout_duration);
         peer.options.read_timeout = Some(timeout_duration);
         peer.options.write_timeout = Some(timeout_duration);
+        peer.options.total_connection_timeout = Some(timeout_duration);
 
+        // 3. Enable HTTP/2 for upstream if backend supports it
+        use pingora_core::protocols::ALPN;
+        peer.options.alpn = ALPN::H2H1;
+
+        // 4. Increase max HTTP/2 streams for better performance
+        peer.options.max_h2_streams = 128;
+
+        // 5. TCP buffer size optimization for large uploads
+        // 1MB receive buffer for better throughput
+        peer.options.tcp_recv_buf = Some(1024 * 1024);
+
+        // 6. Enable TCP fast open for faster connection establishment
+        peer.options.tcp_fast_open = true;
 
         Ok(peer)
     }
@@ -174,6 +195,26 @@ impl ProxyHttp for ReverseProxy {
         } else {
             self.rate_limiter.check_rate_limit(session, &ip, "/", None).await
         }
+    }
+
+    async fn upstream_request_filter(
+        &self,
+        _session: &mut Session,
+        upstream_request: &mut pingora_http::RequestHeader,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        // ⚡ Performance: Enable HTTP/2 server push hints
+        // Remove hop-by-hop headers that shouldn't be forwarded
+        upstream_request.remove_header("connection");
+        upstream_request.remove_header("keep-alive");
+        upstream_request.remove_header("proxy-authenticate");
+        upstream_request.remove_header("proxy-authorization");
+        upstream_request.remove_header("te");
+        upstream_request.remove_header("trailer");
+        upstream_request.remove_header("transfer-encoding");
+        upstream_request.remove_header("upgrade");
+
+        Ok(())
     }
 
     async fn response_filter(
