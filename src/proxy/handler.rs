@@ -13,6 +13,7 @@ use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::services::listening::Service;
 use pingora_core::listeners::tls::TlsSettings;
 use pingora_http::ResponseHeader;
+use pingora_core::protocols::http::v2::server::H2Options;
 
 use std::sync::Arc;
 use pingora_core::server::configuration::ServerConf;
@@ -133,18 +134,23 @@ impl ProxyHttp for ReverseProxy {
         peer.options.write_timeout = Some(timeout_duration);
         peer.options.total_connection_timeout = Some(timeout_duration);
 
-        // 3. Enable HTTP/2 for upstream if backend supports it
+        // 3. Enable HTTP/2 ONLY for HTTPS upstreams (not HTTP)
+        // HTTP/2 requires TLS, enabling it for HTTP causes negotiation failures
         use pingora_core::protocols::ALPN;
-        peer.options.alpn = ALPN::H2H1;
+        if peer.is_tls() {
+            peer.options.alpn = ALPN::H2H1;
+            // Increase max HTTP/2 streams for better performance
+            peer.options.max_h2_streams = 128;
+        } else {
+            // For HTTP upstreams, stick with HTTP/1.1
+            peer.options.alpn = ALPN::H1;
+        }
 
-        // 4. Increase max HTTP/2 streams for better performance
-        peer.options.max_h2_streams = 128;
-
-        // 5. TCP buffer size optimization for large uploads
+        // 4. TCP buffer size optimization for large uploads
         // 1MB receive buffer for better throughput
         peer.options.tcp_recv_buf = Some(1024 * 1024);
 
-        // 6. Enable TCP fast open for faster connection establishment
+        // 5. Enable TCP fast open for faster connection establishment
         peer.options.tcp_fast_open = true;
 
         Ok(peer)
@@ -277,6 +283,17 @@ pub fn build_service(
     port: u16,
 ) -> Service<HttpProxy<ReverseProxy>> {
     let mut service = http_proxy_service(conf, proxy.clone());
+
+    // ⚡ HTTP/2 Performance: Increase window size to 8 MiB for large uploads
+    // Default H2 window is only 64KB, which causes flow-control blocking for large files
+    // This prevents the upload performance issue (30MB uploads taking 60s instead of 2s)
+    const H2_WINDOW_SIZE: u32 = 8 * 1024 * 1024; // 8 MiB
+
+    let mut h2_options = H2Options::new();
+    h2_options.initial_connection_window_size(H2_WINDOW_SIZE);
+    h2_options.initial_window_size(H2_WINDOW_SIZE);
+
+    service.app_logic_mut().unwrap().h2_options = Some(h2_options);
 
     let (http_ports, https_ports) = extract_domain_ports(&proxy.routes, port);
 
