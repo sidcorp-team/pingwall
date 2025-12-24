@@ -295,6 +295,7 @@ domains:
 
           # User-Agent limits
           user_agent_limits:
+            # Category-based limits (detected by parser)
             "chrome": 150
             "firefox": 150
             "safari": 150
@@ -306,6 +307,19 @@ domains:
               block_duration_secs: 300
 
             "crawler": 30
+
+            # Pattern-based limits (substring matching in User-Agent string)
+            # Example: User-Agent contains "fb" or "facebook" → apply this limit
+            "fb":
+              max_req: 60              # 60 requests
+              window_secs: 60          # per minute
+              block_duration_secs: 0   # 0 = SOFT LIMIT (reject only, don't block IP)
+
+            # Example: "google" pattern
+            "google":
+              max_req: 200
+              window_secs: 60
+              block_duration_secs: 0
 
           # Country limits
           country_limits:

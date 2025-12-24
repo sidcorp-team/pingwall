@@ -182,6 +182,21 @@ impl ProxyHttp for ReverseProxy {
     }
 
     async fn request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> Result<bool> {
+        // Check if this is a WebSocket upgrade request - skip rate limiting for WebSocket
+        let is_websocket = session.req_header()
+            .headers
+            .get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+
+        if is_websocket {
+            // WebSocket connections should not be rate limited
+            // Return false to allow the request through
+            log::debug!("WebSocket upgrade request detected - bypassing rate limiting");
+            return Ok(false);
+        }
+
         let ip = match get_client_ip(session) {
             Some(ip) => ip,
             None => {

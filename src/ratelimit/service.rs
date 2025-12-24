@@ -109,40 +109,7 @@ impl RateLimitService {
             }
         }
 
-        // 4. Check dimension-specific limits with window and block behavior
-        // ASN limit
-        if let Some(ref asn) = context.cloudflare.asn {
-            if let Some(limit_config) = advanced_config.get_asn_limit(asn) {
-                let max_req = limit_config.max_req();
-                let window_secs = limit_config.window_secs().unwrap_or(global_window_secs);
-                let block_duration = limit_config.block_duration_secs();
-
-                debug!(
-                    "Applying ASN limit for {}: {} req/{} sec (block: {:?})",
-                    asn, max_req, window_secs, block_duration
-                );
-
-                let (is_limited, should_block, _count) = limiter::check_dimension_limit_with_window(
-                    context,
-                    "asn",
-                    max_req,
-                    window_secs,
-                    block_duration,
-                );
-
-                if is_limited {
-                    let block_dur = block_duration.unwrap_or(default_block_duration);
-                    return Some((
-                        true,
-                        should_block,
-                        format!("ASN {} limit exceeded", asn),
-                        max_req,
-                        block_dur,
-                        window_secs,  // ⭐ Return actual window for this limit
-                    ));
-                }
-            }
-        }
+        // 4. Check User-Agent pattern limits (check raw User-Agent string for patterns)
 
         // Country limit
         if let Some(ref country) = context.cloudflare.country {
@@ -178,7 +145,11 @@ impl RateLimitService {
             }
         }
 
-        // User-Agent limit
+        // User-Agent pattern matching
+        // Check each configured pattern against the raw User-Agent string
+        let ua_lower = context.user_agent.raw.to_lowercase();
+
+        // First check category-based limits (chrome, firefox, bot, etc.)
         let ua_category = context.user_agent.category.as_str();
         if let Some(limit_config) = advanced_config.get_user_agent_limit(ua_category) {
             let max_req = limit_config.max_req();
@@ -186,7 +157,7 @@ impl RateLimitService {
             let block_duration = limit_config.block_duration_secs();
 
             debug!(
-                "Applying User-Agent limit for {}: {} req/{} sec (block: {:?})",
+                "Applying User-Agent category limit for {}: {} req/{} sec (block: {:?})",
                 ua_category, max_req, window_secs, block_duration
             );
 
@@ -206,8 +177,51 @@ impl RateLimitService {
                     format!("User-Agent {} limit exceeded", ua_category),
                     max_req,
                     block_dur,
-                    window_secs,  // ⭐ Return actual window for this limit
+                    window_secs,
                 ));
+            }
+        }
+
+        // Then check pattern-based limits (e.g., "fb", "facebook", "google")
+        // This allows more granular control than category matching
+        if let Some(ref ua_limits) = advanced_config.user_agent_limits {
+            for (pattern, limit_config) in ua_limits {
+                // Skip category names (already checked above)
+                if ["chrome", "firefox", "safari", "edge", "mobile", "bot", "crawler", "curl", "unknown"].contains(&pattern.as_str()) {
+                    continue;
+                }
+
+                // Check if User-Agent contains the pattern
+                if ua_lower.contains(&pattern.to_lowercase()) {
+                    let max_req = limit_config.max_req();
+                    let window_secs = limit_config.window_secs().unwrap_or(global_window_secs);
+                    let block_duration = limit_config.block_duration_secs();
+
+                    debug!(
+                        "Applying User-Agent pattern limit for '{}': {} req/{} sec (block: {:?})",
+                        pattern, max_req, window_secs, block_duration
+                    );
+
+                    let (is_limited, should_block, _count) = limiter::check_dimension_limit_with_window(
+                        context,
+                        &format!("user_agent_pattern_{}", pattern),
+                        max_req,
+                        window_secs,
+                        block_duration,
+                    );
+
+                    if is_limited {
+                        let block_dur = block_duration.unwrap_or(default_block_duration);
+                        return Some((
+                            true,
+                            should_block,
+                            format!("User-Agent pattern '{}' limit exceeded", pattern),
+                            max_req,
+                            block_dur,
+                            window_secs,
+                        ));
+                    }
+                }
             }
         }
 
