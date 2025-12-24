@@ -28,7 +28,7 @@ impl RateLimitService {
         // Extract User-Agent
         let user_agent = UserAgentInfo::from_session(session);
 
-        debug!(
+        info!(
             "Request context: ip={}, path={}, domain={:?}, country={:?}, asn={:?}, ua_category={}",
             ip, path, host, cloudflare.country, cloudflare.asn, user_agent.category.as_str()
         );
@@ -118,7 +118,7 @@ impl RateLimitService {
                 let window_secs = limit_config.window_secs().unwrap_or(global_window_secs);
                 let block_duration = limit_config.block_duration_secs();
 
-                debug!(
+                info!(
                     "Applying country limit for {}: {} req/{} sec (block: {:?})",
                     country, max_req, window_secs, block_duration
                 );
@@ -149,6 +149,13 @@ impl RateLimitService {
         // Check each configured pattern against the raw User-Agent string
         let ua_lower = context.user_agent.raw.to_lowercase();
 
+        info!(
+            "Checking User-Agent limits - raw: '{}', category: {:?}, has_ua_limits: {}",
+            context.user_agent.raw,
+            context.user_agent.category,
+            advanced_config.user_agent_limits.is_some()
+        );
+
         // First check category-based limits (chrome, firefox, bot, etc.)
         let ua_category = context.user_agent.category.as_str();
         if let Some(limit_config) = advanced_config.get_user_agent_limit(ua_category) {
@@ -156,7 +163,7 @@ impl RateLimitService {
             let window_secs = limit_config.window_secs().unwrap_or(global_window_secs);
             let block_duration = limit_config.block_duration_secs();
 
-            debug!(
+            info!(
                 "Applying User-Agent category limit for {}: {} req/{} sec (block: {:?})",
                 ua_category, max_req, window_secs, block_duration
             );
@@ -185,11 +192,16 @@ impl RateLimitService {
         // Then check pattern-based limits (e.g., "fb", "facebook", "google")
         // This allows more granular control than category matching
         if let Some(ref ua_limits) = advanced_config.user_agent_limits {
+            info!("Checking {} User-Agent pattern(s)", ua_limits.len());
+
             for (pattern, limit_config) in ua_limits {
                 // Skip category names (already checked above)
                 if ["chrome", "firefox", "safari", "edge", "mobile", "bot", "crawler", "curl", "unknown"].contains(&pattern.as_str()) {
+                    info!("Skipping category pattern: {}", pattern);
                     continue;
                 }
+
+                info!("Checking pattern '{}' against UA '{}'", pattern, ua_lower);
 
                 // Check if User-Agent contains the pattern
                 if ua_lower.contains(&pattern.to_lowercase()) {
@@ -197,7 +209,7 @@ impl RateLimitService {
                     let window_secs = limit_config.window_secs().unwrap_or(global_window_secs);
                     let block_duration = limit_config.block_duration_secs();
 
-                    debug!(
+                    info!(
                         "Applying User-Agent pattern limit for '{}': {} req/{} sec (block: {:?})",
                         pattern, max_req, window_secs, block_duration
                     );
@@ -261,6 +273,11 @@ impl RateLimitService {
         path: &str,
         advanced_limits: Option<&AdvancedRateLimitConfig>,
     ) -> Result<bool> {
+        info!(
+            "check_rate_limit called - ip: {}, path: {}, has_advanced_limits: {}",
+            ip, path, advanced_limits.is_some()
+        );
+
         // Extract the host header if present for domain-specific rate limiting
         // Try multiple sources in order:
         // 1. Host header (HTTP/1.1)
@@ -310,7 +327,7 @@ impl RateLimitService {
             }
 
             // If no advanced limit matched, fall through to default IP-based limiting
-            debug!("No advanced limit matched for IP {}, falling back to IP-based limiting", ip);
+            info!("No advanced limit matched for IP {}, falling back to IP-based limiting", ip);
         }
 
         // ========== DEFAULT IP-BASED RATE LIMITING ==========

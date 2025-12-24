@@ -24,6 +24,14 @@ impl RequestContext {
     pub fn create_key(&self, dimension: &str) -> String {
         let domain_prefix = self.domain.as_deref().unwrap_or("_");
 
+        // Check for user_agent_pattern_* dimensions first
+        if dimension.starts_with("user_agent_pattern_") {
+            // Extract pattern name (e.g., "facebook" from "user_agent_pattern_facebook")
+            let pattern = dimension.strip_prefix("user_agent_pattern_").unwrap_or("");
+            // Key does NOT include IP - shared across all IPs with this pattern
+            return format!("{}:{}:ua_pattern:{}", domain_prefix, self.path, pattern);
+        }
+
         match dimension {
             "ip" => format!("{}:{}:{}", domain_prefix, self.path, self.ip),
             "user_agent" => {
