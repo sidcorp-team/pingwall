@@ -270,8 +270,38 @@ impl ProxyHttp for ReverseProxy {
         upstream_request.remove_header("proxy-authorization");
         upstream_request.remove_header("te");
         upstream_request.remove_header("trailer");
-        upstream_request.remove_header("transfer-encoding");
+        // NOTE: transfer-encoding MUST NOT be removed here. Pingora's H1 body
+        // writer frames the forwarded body based on this header
+        // (init_body_writer_comm): stripping it on a chunked request (no
+        // content-length, e.g. POSTs proxied by Cloudflare) makes pingora fall
+        // back to HTTP/1.0 raw writes on a keep-alive connection — the
+        // upstream then parses the body bytes as a new request and replies
+        // 400 "Invalid HTTP request received.", poisoning the pooled
+        // connection for subsequent requests.
 
+        Ok(())
+    }
+
+    async fn request_body_filter(
+        &self,
+        _session: &mut Session,
+        body: &mut Option<bytes::Bytes>,
+        end_of_stream: bool,
+        _ctx: &mut Self::CTX,
+    ) -> Result<()> {
+        // pingora-proxy 0.6 bug guard: an H2 downstream (Cloudflare, curl -T)
+        // often ends the request body with an EMPTY DATA frame + END_STREAM.
+        // proxy_h1 forwards that empty chunk to write_body(), and in chunked
+        // mode a 0-byte chunk IS the terminator ("0\r\n\r\n"); finish_body()
+        // then writes the terminator a second time. The H1 upstream parses the
+        // duplicate as the start of a bogus next request -> 400 "Invalid HTTP
+        // request received." + poisoned keep-alive connection. Dropping the
+        // final empty chunk (None still finishes the body once) avoids it.
+        // Only when end_of_stream: an empty mid-stream chunk turned into None
+        // would falsely signal end-of-body in proxy_h1.
+        if end_of_stream && body.as_ref().is_some_and(|b| b.is_empty()) {
+            *body = None;
+        }
         Ok(())
     }
 
