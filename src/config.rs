@@ -284,11 +284,18 @@ pub struct RateLimitRule {
     /// Conditions that must ALL be true (AND logic)
     pub conditions: Vec<RateLimitCondition>,
 
-    /// Max requests if this rule matches
+    /// Max requests if this rule matches.
+    /// 0 = block every matching request outright.
     pub max_req: isize,
 
-    /// Block duration in seconds if this rule matches
+    /// Block duration in seconds if this rule matches.
+    /// 0 = soft limit (reject the request only, do NOT ban the IP).
     pub block_duration: u64,
+
+    /// Counter window in seconds for this rule.
+    /// Falls back to the global rate_limit_window_secs when omitted.
+    #[serde(default)]
+    pub window_secs: Option<u64>,
 }
 
 /// A condition for rate limit rules
@@ -297,6 +304,11 @@ pub struct RateLimitRule {
 pub enum RateLimitCondition {
     /// User-Agent contains string (case-insensitive)
     UserAgentContains { value: String },
+
+    /// User-Agent does NOT contain string (case-insensitive).
+    /// Lets a rule target one client while sparing another whose UA is a
+    /// superset, e.g. match "chrome/145.0.0.0" but not "meta-externalads".
+    UserAgentNotContains { value: String },
 
     /// Country is in the list
     CountryIn { values: Vec<String> },
@@ -309,6 +321,22 @@ pub enum RateLimitCondition {
 
     /// Threat score is above threshold
     ThreatScoreAbove { value: u8 },
+
+    /// Client IP falls inside any of these CIDR ranges.
+    /// Accepts IPv4 and IPv6, with or without a prefix length
+    /// ("43.119.100.0/24", "2a03:2880::/32", "1.2.3.4").
+    IpInCidr { values: Vec<String> },
+
+    /// Client IP is NOT inside any of these CIDR ranges.
+    IpNotInCidr { values: Vec<String> },
+
+    /// Request does not carry this header at all (case-insensitive name).
+    /// Real browsers always send Accept-Language; most scrapers omit it.
+    HeaderMissing { name: String },
+
+    /// Request carries this header and its value contains the substring
+    /// (both compared case-insensitively).
+    HeaderContains { name: String, value: String },
 }
 
 impl AdvancedRateLimitConfig {

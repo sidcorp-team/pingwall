@@ -17,9 +17,17 @@ pub struct RequestContext {
     pub domain: Option<String>,
     pub cloudflare: CloudflareContext,
     pub user_agent: UserAgentInfo,
+    /// Request headers, names lowercased. Used by header-based rule
+    /// conditions (e.g. flagging clients that omit Accept-Language).
+    pub headers: HashMap<String, String>,
 }
 
 impl RequestContext {
+    /// Look up a header by case-insensitive name.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(&name.to_lowercase()).map(|s| s.as_str())
+    }
+
     /// Create a rate limit key based on the context and dimension
     pub fn create_key(&self, dimension: &str) -> String {
         let domain_prefix = self.domain.as_deref().unwrap_or("_");
@@ -30,6 +38,14 @@ impl RequestContext {
             let pattern = dimension.strip_prefix("user_agent_pattern_").unwrap_or("");
             // Key does NOT include IP - shared across all IPs with this pattern
             return format!("{}:{}:ua_pattern:{}", domain_prefix, self.path, pattern);
+        }
+
+        // Custom rules count globally per (domain, path, rule) — deliberately
+        // NOT per IP, so a rule still bites when one actor spreads its traffic
+        // across thousands of proxy IPs.
+        if dimension.starts_with("rule_") {
+            let rule = dimension.strip_prefix("rule_").unwrap_or("");
+            return format!("{}:{}:rule:{}", domain_prefix, self.path, rule);
         }
 
         match dimension {

@@ -4,7 +4,9 @@ use crate::ratelimit::limiter::{self, RequestContext};
 use crate::utils::ip::get_client_ip;
 use crate::utils::cloudflare::CloudflareContext;
 use crate::utils::useragent::UserAgentInfo;
+use crate::utils::cidr::ip_in_any_cidr;
 use crate::config::{AdvancedRateLimitConfig, RateLimitCondition};
+use std::collections::HashMap;
 use log::{info, warn, debug};
 use pingora::http::ResponseHeader;
 use pingora_core::Result;
@@ -28,6 +30,15 @@ impl RateLimitService {
         // Extract User-Agent
         let user_agent = UserAgentInfo::from_session(session);
 
+        // Snapshot headers (lowercased names) so rule conditions can test for
+        // presence/absence without holding on to the session.
+        let mut headers: HashMap<String, String> = HashMap::new();
+        for (name, value) in session.req_header().headers.iter() {
+            if let Ok(v) = value.to_str() {
+                headers.insert(name.as_str().to_lowercase(), v.to_string());
+            }
+        }
+
         info!(
             "Request context: ip={}, path={}, domain={:?}, country={:?}, asn={:?}, ua_category={}",
             ip, path, host, cloudflare.country, cloudflare.asn, user_agent.category.as_str()
@@ -39,6 +50,7 @@ impl RateLimitService {
             domain: host.map(|s| s.to_string()),
             cloudflare,
             user_agent,
+            headers,
         }
     }
 
@@ -88,24 +100,61 @@ impl RateLimitService {
             }
         }
 
-        // 3. Check custom rules (if any match, return that rule's limit)
+        // 3. Check custom rules.
+        // Rules are evaluated in the order they appear in config (unlike the
+        // user_agent_limits map, whose iteration order is arbitrary), so put
+        // the most specific rule first.
         if let Some(ref rules) = advanced_config.rules {
             for rule in rules {
-                if Self::rule_matches(context, rule) {
+                if !Self::rule_matches(context, rule) {
+                    continue;
+                }
+
+                let window_secs = rule.window_secs.unwrap_or(global_window_secs);
+
+                // max_req = 0 means reject every matching request outright.
+                // (The shared counter helper treats <= 0 as "disabled", so this
+                // case is handled here instead of being passed down.)
+                if rule.max_req == 0 {
                     info!(
-                        "IP {} matched rule '{}' with limit {}",
-                        context.ip, rule.name, rule.max_req
+                        "IP {} matched rule '{}' (max_req=0 -> reject all)",
+                        context.ip, rule.name
                     );
-                    // Rules use global window for now (can be extended later)
                     return Some((
-                        false,
-                        false,
+                        true,
+                        rule.block_duration > 0,
+                        format!("Matched rule: {}", rule.name),
+                        0,
+                        rule.block_duration,
+                        window_secs,
+                    ));
+                }
+
+                let (is_limited, should_block, count) = limiter::check_dimension_limit_with_window(
+                    context,
+                    &format!("rule_{}", rule.name),
+                    rule.max_req,
+                    window_secs,
+                    Some(rule.block_duration),
+                );
+
+                debug!(
+                    "IP {} matched rule '{}': {}/{} in {}s",
+                    context.ip, rule.name, count, rule.max_req, window_secs
+                );
+
+                if is_limited {
+                    return Some((
+                        true,
+                        should_block,
                         format!("Matched rule: {}", rule.name),
                         rule.max_req,
                         rule.block_duration,
-                        global_window_secs,  // Rules use global window
+                        window_secs,
                     ));
                 }
+                // Under the limit: fall through so later rules and the
+                // User-Agent / dimension limits still get their say.
             }
         }
 
@@ -262,6 +311,24 @@ impl RateLimitService {
             }
             RateLimitCondition::ThreatScoreAbove { value } => {
                 context.cloudflare.is_threat_above(*value)
+            }
+            RateLimitCondition::UserAgentNotContains { value } => {
+                !context.user_agent.raw.to_lowercase().contains(&value.to_lowercase())
+            }
+            RateLimitCondition::IpInCidr { values } => {
+                ip_in_any_cidr(&context.ip, values)
+            }
+            RateLimitCondition::IpNotInCidr { values } => {
+                !ip_in_any_cidr(&context.ip, values)
+            }
+            RateLimitCondition::HeaderMissing { name } => {
+                context.header(name).is_none()
+            }
+            RateLimitCondition::HeaderContains { name, value } => {
+                context
+                    .header(name)
+                    .map(|h| h.to_lowercase().contains(&value.to_lowercase()))
+                    .unwrap_or(false)
             }
         }
     }
